@@ -20,6 +20,12 @@ Built for CRF / EDC-style exports where every worksheet looks like:
 This script only reads the workbook (openpyxl, read-only) and only writes
 new CSV/zip files -- it never edits the source .xlsx.
 
+A form that's too wide for one Excel tab (e.g. "Study drug
+administrations", split into EX / EX1 / EX2 / EX3 for columns 1-15,
+16-30, 31-45, 46-55) is detected automatically: typing the plain form
+name pulls every one of its continuation tabs in one go. Typing an exact
+tab code (e.g. "EX1") still selects just that single tab.
+
 --------------------------------------------------------------------------
 WHY THIS EXISTS / HOW IT'S MEANT TO BE REUSED
 --------------------------------------------------------------------------
@@ -104,6 +110,31 @@ except ImportError:
 _SPLIT_WORDS = re.compile(r"\s+(?:and|&)\s+|,", re.IGNORECASE)
 _TOKEN = re.compile(r"[a-z0-9]+")
 _STOPWORDS = {"and", "or", "the", "a", "an", "of", "to", "at", "in", "on"}
+_TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def base_title(title):
+    """Strip a trailing '(...)' suffix off a title, repeatedly, e.g.
+    'STUDY DRUG ADMINISTRATIONS (01-15)' -> 'STUDY DRUG ADMINISTRATIONS'.
+    Used to detect when several tabs are really just numbered
+    continuations of the one form (EX / EX1 / EX2 / EX3 all reduce to
+    the same base title) so a single plain-language query can pull all
+    of them at once."""
+    prev, t = None, title.strip()
+    while prev != t:
+        prev = t
+        t = _TRAILING_PAREN.sub("", t).strip()
+    return t or title.strip()
+
+
+def group_sheets_by_base_title(sheets):
+    """Group sheets that share the same base_title (see above). A group
+    with more than one member represents one logical form split across
+    several tabs purely for Excel's column-count limit."""
+    groups = {}
+    for s in sheets:
+        groups.setdefault(base_title(s["title"]), []).append(s)
+    return groups
 
 
 def _stem(tok):
@@ -175,16 +206,23 @@ def match_one(query, sheets, min_score=0.25, dominant_gap=0.15):
     """Return (matched_sheets, warnings) for one user-typed form name.
 
     Order of attempts: exact tab-code match, exact title match, then a
-    fuzzy content-word match. If the best match is clearly ahead of the
-    runner-up, it's taken directly with no fuss. If the top two scores
-    are close, that's treated as a signal worth investigating: first try
-    splitting the phrase as two form names joined by 'and'/'&'/',' (e.g.
-    "Biopsy Collection and Tissue Archival" -> two tabs); if that doesn't
-    resolve it, take the best guess but clearly report the close
-    runner-up and the flag to force it instead, since close lexical
-    scores can't always tell two similarly-worded forms apart on wording
-    alone (e.g. "Concomitant Medications" vs "Concomitant Medication
-    Assessment" -- picking the intended one may need a human glance)."""
+    fuzzy content-word match across "candidates" -- where a candidate is
+    either a single tab, or (when several tabs are just numbered
+    continuations of the same form, e.g. EX / EX1 / EX2 / EX3, detected
+    via their shared base_title) the whole group at once. This means a
+    plain-language query like "Study drug administrations" matches and
+    returns all of its continuation tabs together, while typing an exact
+    tab code (e.g. "EX1") always still selects just that one tab.
+
+    If the best candidate is clearly ahead of the runner-up, it's taken
+    directly. If the top two scores are close, that's treated as a
+    signal worth investigating: first try splitting the phrase as two
+    form names joined by 'and'/'&'/',' (e.g. "Biopsy Collection and
+    Tissue Archival" -> two tabs); if that doesn't resolve it, take the
+    best guess but clearly report the close runner-up and the flag to
+    force it instead, since close lexical scores can't always tell two
+    similarly-worded forms apart on wording alone (e.g. "Concomitant
+    Medications" vs "Concomitant Medication Assessment")."""
     q_clean = query.strip()
     if not q_clean:
         return [], []
@@ -198,31 +236,40 @@ def match_one(query, sheets, min_score=0.25, dominant_gap=0.15):
         if norm_q == " ".join(sorted(normalize_tokens(s["title"]))):
             return [s], []
 
-    ranked = _ranked(q_clean, sheets)
-    if not ranked:
+    groups = group_sheets_by_base_title(sheets)
+    candidates = []  # (score, [sheets], label)
+    for key, members in groups.items():
+        label = key if len(members) > 1 else members[0]["title"]
+        score = containment_score(q_clean, label)
+        candidates.append((score, members, label))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    if not candidates:
         return [], [f"No good match found for \"{query}\". Run with --list to see available forms."]
 
-    top_score, top_sheet = ranked[0]
-    second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+    top_score, top_sheets, top_label = candidates[0]
+    second_score = candidates[1][0] if len(candidates) > 1 else 0.0
     gap = top_score - second_score
 
     if top_score < min_score:
         return [], [f"No good match found for \"{query}\". Run with --list to see available forms."]
 
     if gap >= dominant_gap:
-        return [top_sheet], []
+        return top_sheets, []
 
     split_result = _try_split(q_clean, sheets)
     if split_result:
         matched, _avg = split_result
         return matched, []
 
-    alt = ranked[1][1]
+    alt_label, alt_sheets = candidates[1][2], candidates[1][1]
     tone = "ambiguous match" if top_score >= 0.4 else "weak match"
-    return [top_sheet], [
-        f"{tone}: \"{query}\" -> \"{top_sheet['title']}\" ({top_sheet['code']}, score {top_score:.2f}), "
-        f"but \"{alt['title']}\" ({alt['code']}, score {second_score:.2f}) is close behind. "
-        f"If that's the one you actually meant, rerun with --forms {alt['code']} for that entry."
+    top_codes = "+".join(s["code"] for s in top_sheets)
+    alt_codes = "+".join(s["code"] for s in alt_sheets)
+    return top_sheets, [
+        f"{tone}: \"{query}\" -> \"{top_label}\" ({top_codes}, score {top_score:.2f}), "
+        f"but \"{alt_label}\" ({alt_codes}, score {second_score:.2f}) is close behind. "
+        f"If that's the one you actually meant, rerun with --forms {alt_codes.replace('+', ' ')} for that entry."
     ]
 
 
