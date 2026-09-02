@@ -1,0 +1,19 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Source data and generated output — don't commit patient/subject data
+*.xlsx
+*.xlsm
+csv_export_*.zip
+out/
+
+# OS/editor clutter
+.DS_Store
+Thumbs.db
+.vscode/
+csv_export_*/
