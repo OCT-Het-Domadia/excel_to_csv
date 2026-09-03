@@ -181,7 +181,7 @@ match always wins immediately, bypassing fuzzy matching entirely:
 python xlsx_forms_to_csv.py study_export.xlsx --forms CM BCR AE
 ```
 
-### 5.5 `--all`
+### 5.5 `--all` (or just writing "all")
 
 Skip selection and export every tab in the workbook:
 
@@ -189,22 +189,42 @@ Skip selection and export every tab in the workbook:
 python xlsx_forms_to_csv.py study_export.xlsx --all
 ```
 
+You can also just write `all` as a form name instead — it's recognised
+in any capitalisation (`all`, `ALL`, `All`, ...) and works the same way
+whether it's passed via `--forms` or written as a line in
+`--forms-file`:
+
+```bash
+python xlsx_forms_to_csv.py study_export.xlsx --forms all
+```
+
 ### 5.6 How matching works (for `--forms` / `--forms-file`)
 
 For each name you type, the script tries, in order:
 
-1. **Exact tab code** (e.g. you typed `TU`) → picked immediately.
+1. **Exact tab code** (e.g. you typed `TU`) → picked immediately, and
+   only that one tab.
 2. **Exact title match**, ignoring case/spacing/punctuation.
 3. **Fuzzy content match** — compares the words in your phrase against
    the words in every tab's title (case-insensitive, plurals normalized,
    filler words like "and"/"the"/"of" ignored). If one tab is clearly
    the best fit, it's picked with no fuss.
-4. If the top two candidates score close together, the script assumes
-   your phrase might actually be **naming two forms joined by "and" /
-   "&" / a comma** (e.g. "Biopsy Collection and Tissue Archival") and
-   tries matching each half separately. If that resolves cleanly to two
-   different tabs, both are exported.
-5. If it's still ambiguous, the script picks its best guess **and prints
+4. **Numbered continuation tabs are pulled together automatically.**
+   Some forms are too wide for one Excel tab and get split into several
+   (e.g. "Study drug administrations" → `EX` / `EX1` / `EX2` / `EX3`,
+   covering columns 1-15 / 16-30 / 31-45 / 46-55). The script detects
+   these because they share the same title once the trailing `(...)`
+   range is stripped off, so typing the plain form name once — e.g.
+   `Study drug administrations` — exports all of its continuation tabs
+   in one go. Typing an exact tab code (e.g. `EX1`) still selects just
+   that single tab, per point 1.
+5. If the top candidates score close together and none of the above
+   resolved it, the script assumes your phrase might actually be
+   **naming two different forms joined by "and" / "&" / a comma** (e.g.
+   "Biopsy Collection and Tissue Archival") and tries matching each half
+   separately. If that resolves cleanly to two different tabs, both are
+   exported.
+6. If it's still ambiguous, the script picks its best guess **and prints
    a warning naming the close runner-up**, with the exact flag to force
    that one instead:
 
@@ -221,7 +241,7 @@ For each name you type, the script tries, in order:
    When you see this warning, just re-run with the suggested `--forms
    <CODE>` for that one entry, or use `--list` / `--interactive` to pick
    precisely.
-6. If nothing scores reasonably, the script reports no match for that
+7. If nothing scores reasonably, the script reports no match for that
    name rather than guessing wildly — run `--list` to see what's
    actually in the workbook.
 
@@ -247,6 +267,8 @@ inspection:
 
 other:
   --title-cell CELL          Cell holding the form title (default: A1)
+  --keep-title-row            Include the form-title row (row 1) in the CSV output.
+                              By default it's left out on every tab (see §7 below).
   --output-dir DIR           Where to write the zip (default: current folder)
   --output-name NAME         Zip filename (default: auto-generated with a timestamp)
 ```
@@ -263,7 +285,29 @@ different files never collide.
 
 ---
 
-## 7. What's preserved, and one thing to know about opening CSVs in Excel
+## 7. The form-title row is left out of every CSV, on purpose
+
+Each tab's row 1 is just a heading used to identify the form (e.g.
+`ADVERSE EVENT FORM`, `DEMOGRAPHY`) — it isn't actual field data, so by
+default the script drops it from the exported CSV. This applies to
+**every tab it exports, not just one specific form** — every CSV you get
+starts straight from the field-label row (row 2) and the field-code row
+(row 3), then the data.
+
+If you specifically want that title row included — e.g. to keep a visual
+label at the top of each file — add `--keep-title-row`:
+
+```bash
+python xlsx_forms_to_csv.py study_export.xlsx --forms "Adverse Event" --keep-title-row
+```
+
+This is a single switch for the whole run — it's either included on
+every exported tab or excluded from every exported tab, there's no
+per-tab option.
+
+---
+
+## 8. What's preserved, and one thing to know about opening CSVs in Excel
 
 - Cells are copied to CSV exactly as stored — text stays text. If a
   field is stored as `"001"`, the CSV contains `001`.
@@ -285,7 +329,7 @@ during import, instead of double-clicking the file.
 
 ---
 
-## 8. Files in this folder
+## 9. Files in this folder
 
 | File                      | Purpose                                              |
 |----------------------------|-------------------------------------------------------|
@@ -300,7 +344,7 @@ different workbook.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 **"No good match found for ..."**
 Run `--list` on that exact workbook and check the spelling/wording

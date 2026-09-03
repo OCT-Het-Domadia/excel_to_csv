@@ -71,8 +71,11 @@ USAGE
 4) Interactive picker (numbered checklist, works well for a one-off run):
      python xlsx_forms_to_csv.py study_export.xlsx --interactive
 
-5) Convert every tab in the workbook:
+5) Convert every tab in the workbook (either works the same way):
      python xlsx_forms_to_csv.py study_export.xlsx --all
+     python xlsx_forms_to_csv.py study_export.xlsx --forms all
+   ("all" is recognised in any capitalisation -- "all", "ALL", "All" --
+   whether passed via --forms or written as a line in --forms-file.)
 
 6) Multiple workbooks in one go (each workbook's CSVs are kept in their
    own sub-folder inside the zip so names never collide):
@@ -82,6 +85,10 @@ Output: a single <name>_csv_export_<timestamp>.zip written to the
 current folder (override with --output-dir / --output-name).
 
 Only dependency: openpyxl (pip install openpyxl --break-system-packages)
+
+Note: the exported CSVs leave out row 1 (the form title, e.g. "ADVERSE
+EVENT FORM") since it's only there to identify the tab, not actual field
+data. Pass --keep-title-row to include it anyway.
 --------------------------------------------------------------------------
 """
 
@@ -316,15 +323,21 @@ def format_cell(value, number_format=None):
     return str(value)
 
 
-def sheet_to_csv_bytes(ws):
+def sheet_to_csv_bytes(ws, skip_title_row=True):
     """Render one worksheet to CSV bytes (UTF-8 with BOM, so Excel opens
     non-ASCII characters correctly), preserving every row/column exactly
-    as stored, including blank spacer rows some forms use."""
+    as stored, including blank spacer rows some forms use.
+
+    Row 1 (the form title, e.g. "ADVERSE EVENT FORM") is skipped by
+    default -- it's only there to identify which tab is which and isn't
+    part of the actual field/data content, so it's left out of the CSV.
+    Set skip_title_row=False to include it."""
     buf = io.StringIO()
     writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
     max_row = ws.max_row or 0
     max_col = ws.max_column or 0
-    for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+    start_row = 2 if (skip_title_row and max_row >= 2) else 1
+    for row in ws.iter_rows(min_row=start_row, max_row=max_row, max_col=max_col):
         writer.writerow([format_cell(c.value, c.number_format) for c in row])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
@@ -377,12 +390,18 @@ def main():
         epilog=__doc__,
     )
     ap.add_argument("workbooks", nargs="+", help="Path(s) to .xlsx file(s)")
-    ap.add_argument("--forms", nargs="+", help="Form names to export (case-insensitive)")
+    ap.add_argument("--forms", nargs="+", help="Form names to export (case-insensitive). Pass just 'all' (any case) to export every tab.")
     ap.add_argument("--forms-file", help="Text file with one form name per line")
     ap.add_argument("--interactive", action="store_true", help="Pick forms from a numbered list")
     ap.add_argument("--all", action="store_true", help="Export every tab in the workbook")
     ap.add_argument("--list", action="store_true", help="List each tab's form name and code, then exit")
     ap.add_argument("--title-cell", default="A1", help="Cell holding the form title (default A1)")
+    ap.add_argument(
+        "--keep-title-row",
+        action="store_true",
+        help="Include row 1 (the form title, e.g. 'ADVERSE EVENT FORM') in the CSV output. "
+             "By default it's left out since it's only there to identify the tab.",
+    )
     ap.add_argument("--output-dir", default=".", help="Where to write the zip (default: current folder)")
     ap.add_argument("--output-name", help="Zip filename (default: auto-generated)")
     args = ap.parse_args()
@@ -392,6 +411,10 @@ def main():
         requested.extend(args.forms)
     if args.forms_file:
         requested.extend(read_forms_file(args.forms_file))
+
+    # Typing "all" (any capitalisation: "all", "ALL", "All", "aLL", ...)
+    # anywhere in the requested list means "every tab", same as --all.
+    wants_all = args.all or any(r.strip().lower() == "all" for r in requested)
 
     all_entries = []  # (arcname, bytes)
     multi_source = len(args.workbooks) > 1
@@ -413,7 +436,7 @@ def main():
 
         if args.interactive:
             chosen = interactive_pick(sheets)
-        elif args.all:
+        elif wants_all:
             chosen = list(sheets)
         elif requested:
             chosen, seen_codes = [], set()
@@ -435,7 +458,7 @@ def main():
             print(f"\n{wb_path.name}: exporting {len(chosen)} tab(s)")
             used_names = set()
             for s in chosen:
-                csv_bytes = sheet_to_csv_bytes(s["ws"])
+                csv_bytes = sheet_to_csv_bytes(s["ws"], skip_title_row=not args.keep_title_row)
                 base = sanitize_filename(s["title"])
                 fname = base + ".csv"
                 if fname.lower() in used_names:
